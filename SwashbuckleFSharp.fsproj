@@ -1,7 +1,11 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
+    <PackageId>OAFZ.SwashbuckleFSharp</PackageId>
+    <Version>0.1.0</Version>
+    <Authors>阿飞</Authors>
+    <PackageLicenseExpression>MIT</PackageLicenseExpression>
+    <TargetFramework>net7.0</TargetFramework>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>
   </PropertyGroup>
 

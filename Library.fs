@@ -1,4 +1,4 @@
-﻿module SwashbuckleFSharp
+﻿module OAFZ.SwashbuckleFSharp
 
 open Swashbuckle.AspNetCore.SwaggerGen
 open System
