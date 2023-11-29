@@ -4,78 +4,98 @@ open Swashbuckle.AspNetCore.SwaggerGen
 open System
 open System.Reflection
 open System.Text.Json.Serialization
+open Microsoft.Extensions.DependencyInjection
 open Microsoft.OpenApi.Any
 open Microsoft.OpenApi.Models
-open System.ComponentModel.DataAnnotations
-open System.Runtime.CompilerServices
 
-type NullableFilter() =
-
-    let (|OptionType|NullableType|RequiredType|) (t: Type) =
-        let typeInfo = t.GetTypeInfo()
-
-        if
-            t.IsDefined(typeof<RequiredAttribute>)
-            || t.IsDefined(typeof<RequiredMemberAttribute>)
-        then
-            RequiredType
-        else if
-            typeInfo.IsGenericType
-            && typeInfo.GetGenericTypeDefinition() = typedefof<Option<_>>
-        then
-            OptionType
-        elif Nullable.GetUnderlyingType(t) <> null then
-            NullableType
-        else
-            RequiredType
-
-    let getMemberName (m: MemberInfo) =
-        let inline camelCase (s: string) =
-            Char.ToLower(s.[0]).ToString() + s.[1..]
-
-        m.IsDefined(typeof<JsonPropertyNameAttribute>, false)
-        |> function
-            | true -> m.GetCustomAttribute<JsonPropertyNameAttribute>().Name
-            | false -> camelCase m.Name
-
-    interface ISchemaFilter with
-        member _.Apply(schema, context) =
-            let t = context.Type
-
-            match t with
-            | NullableType -> schema.Nullable <- true
-            | OptionType ->
-                schema.Nullable <- true
-                schema.Type <- schema.Properties.["value"].Type
-                schema.Properties.Clear()
-            | RequiredType -> schema.Nullable <- false
-
-            t.GetMembers(BindingFlags.Public ||| BindingFlags.Instance)
-            |> Array.iter (fun m ->
-                match m with
-                | :? PropertyInfo as p -> p.PropertyType
-                | :? FieldInfo as f -> f.FieldType
-                | _ -> null
+/// <summary>
+/// By default, the query paramters would not auto convert to camelCase, so we need this.
+/// </summary>
+type CamelCaseOperationFilter() =
+    interface IOperationFilter with
+        member this.Apply(operation, context) =
+            for p in operation.Parameters do
+                p.In
+                |> Option.ofNullable
                 |> function
-                    | null -> ()
-                    | RequiredType -> schema.Required.Add(getMemberName m) |> ignore
-                    | _ -> ())
+                    | Some position ->
+                        if position = ParameterLocation.Path || position = ParameterLocation.Query then
+                            p.Name <- Char.ToLower(p.Name[0]).ToString() + p.Name[1 .. p.Name.Length - 1]
+                    | None -> ()
 
-type DiscriminatorFilter() =
-
-    let (|JsonPolymorphismType|Other|) (t: Type) =
-        match t.IsDefined(typeof<JsonDerivedTypeAttribute>) with
-        | false -> Other
-        | _ ->
-            t.GetCustomAttributes<JsonDerivedTypeAttribute>()
-            |> Seq.length
-            |> fun x -> if x > 1 then JsonPolymorphismType else Other
-
-
+/// <summary>
+/// Sometimes, some fields which don't exsited in client would be add to required, so delete those.
+/// </summary>
+type CleanExtraRequiredFieldSchemaFilter() =
     interface ISchemaFilter with
         member _.Apply(schema, context) =
-            match context.Type with
-            | JsonPolymorphismType ->
+            match schema.Type with
+            | "object" -> ()
+            | _ -> schema.Required.Clear()
+
+/// <summary>
+/// Make all field except those marked nullable requred and remove all Option type.
+/// </summary>
+type HandleNullableMarkDocumentFilter() =
+    interface IDocumentFilter with
+        member _.Apply(document, context) =
+            document.Components.Schemas.Values
+            |> Seq.iter (fun schema ->
+                schema.Properties.Keys
+                |> Seq.iter (fun k' ->
+                    let prop = schema.Properties[k']
+
+                    if prop.Reference <> null then
+                        let ref' = prop.Reference.ReferenceV3.Split("/") |> Array.last
+
+                        if ref'.EndsWith("FSharpOption") then
+                            prop.Type <- document.Components.Schemas[ref'].Properties["value"].Type
+                            prop.Nullable <- true
+                            prop.Reference <- null
+                    elif not prop.Nullable then
+                        schema.Required.Add(k') |> ignore
+                    else
+                        schema.Required.Remove(k') |> ignore))
+
+            document.Components.Schemas.Keys
+            |> Seq.iter (fun k ->
+                if k.EndsWith("FSharpOption") then
+                    document.Components.Schemas.Remove(k) |> ignore)
+
+/// <summary>
+/// Mark all Nullable and Option type as nullable.
+/// </summary>
+type MarkNullableFieldSchemaFilter() =
+    interface ISchemaFilter with
+        member this.Apply(schema, context) =
+            let typeInfo = context.Type.GetTypeInfo()
+
+            match typeInfo.IsGenericType with
+            | true ->
+                match
+                    typeInfo.GetGenericTypeDefinition() = typedefof<Nullable<_>>
+                    || typeInfo.GetGenericTypeDefinition() = typedefof<Option<_>>
+                with
+                | true -> schema.Nullable <- true
+                | false -> schema.Nullable <- false
+            | false -> schema.Nullable <- false
+
+/// <summary>
+/// We can use <see cref="Swashbuckle.AspNetCore.Annotations.SwaggerDiscriminatorAttribute"></see>, but <see cref="JsonDerivedTypeAttribute" /> has provided enough metadata.
+/// </summary>
+type SystemTextJsonPolymorphicSchemaFilter() =
+    interface ISchemaFilter with
+        member _.Apply(schema, context) =
+            let inline isJsonPolymorphismType (t: Type) =
+                match t.IsDefined(typeof<JsonDerivedTypeAttribute>) with
+                | false -> false
+                | _ ->
+                    t.GetCustomAttributes<JsonDerivedTypeAttribute>()
+                    |> Seq.length
+                    |> fun x -> x > 1
+
+            match isJsonPolymorphismType context.Type with
+            | true ->
                 schema.Properties.Clear()
 
                 context.Type.GetCustomAttributes<JsonDerivedTypeAttribute>()
@@ -88,16 +108,14 @@ type DiscriminatorFilter() =
                     schema.AnyOf.Add(s))
             | _ -> ()
 
-type CleanFilter() =
+type SwaggerGenOptions with
 
-    let (|ObjectJsonType|OtherJsonType|) (t: string) =
-        match t with
-        | "object" -> ObjectJsonType
-        | _ -> OtherJsonType
-
-
-    interface ISchemaFilter with
-        member _.Apply(schema, context) =
-            match schema.Type with
-            | ObjectJsonType -> ()
-            | _ -> schema.Required.Clear()
+    /// <summary>
+    /// make Swashbuckle F# friendly
+    /// </summary>
+    member this.UseFSharp() =
+        this.SchemaFilter<SystemTextJsonPolymorphicSchemaFilter>()
+        this.SchemaFilter<CleanExtraRequiredFieldSchemaFilter>()
+        this.SchemaFilter<MarkNullableFieldSchemaFilter>()
+        this.OperationFilter<CamelCaseOperationFilter>()
+        this.DocumentFilter<HandleNullableMarkDocumentFilter>()
