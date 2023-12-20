@@ -9,6 +9,7 @@
 		<GenerateDocumentationFile>true</GenerateDocumentationFile>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<RepositoryUrl>https://github.com/Xuhv/OAFZ.SwashbuckleFSharp</RepositoryUrl>
+		<RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
 	</PropertyGroup>
 
 	<ItemGroup>
