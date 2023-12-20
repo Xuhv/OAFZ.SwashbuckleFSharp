@@ -7,6 +7,7 @@ open System.Text.Json.Serialization
 open Microsoft.Extensions.DependencyInjection
 open Microsoft.OpenApi.Any
 open Microsoft.OpenApi.Models
+open Microsoft.FSharp.Reflection
 
 /// <summary>
 /// By default, the query paramters would not auto convert to camelCase, so we need this.
@@ -34,15 +35,13 @@ type CleanExtraRequiredFieldSchemaFilter() =
             | _ -> schema.Required.Clear()
 
 /// <summary>
-/// Make all field except those marked nullable requred and remove all Option type.
+/// Make all field except those marked nullable required and remove all Option type.
 /// </summary>
 type HandleNullableMarkDocumentFilter() =
     interface IDocumentFilter with
         member _.Apply(document, context) =
-            document.Components.Schemas.Values
-            |> Seq.iter (fun schema ->
-                schema.Properties.Keys
-                |> Seq.iter (fun k' ->
+            for schema in document.Components.Schemas.Values do
+                for k' in schema.Properties.Keys do
                     let prop = schema.Properties[k']
 
                     if prop.Reference <> null then
@@ -52,15 +51,16 @@ type HandleNullableMarkDocumentFilter() =
                             prop.Type <- document.Components.Schemas[ref'].Properties["value"].Type
                             prop.Nullable <- true
                             prop.Reference <- null
-                    elif not prop.Nullable then
+
+                    if not prop.Nullable then
                         schema.Required.Add(k') |> ignore
                     else
-                        schema.Required.Remove(k') |> ignore))
+                        schema.Required.Remove(k') |> ignore
 
-            document.Components.Schemas.Keys
-            |> Seq.iter (fun k ->
+            for k in document.Components.Schemas.Keys do
                 if k.EndsWith("FSharpOption") then
-                    document.Components.Schemas.Remove(k) |> ignore)
+                    document.Components.Schemas.Remove(k) |> ignore
+
 
 /// <summary>
 /// Mark all Nullable and Option type as nullable.
@@ -108,6 +108,38 @@ type SystemTextJsonPolymorphicSchemaFilter() =
                     schema.AnyOf.Add(s))
             | _ -> ()
 
+
+/// <summary>a discriminator ``$type`` is required</summary>
+type UnionSchemaFilter() =
+    interface ISchemaFilter with
+        member this.Apply(schema, context) =
+            let isOk (ty: Type) =
+                match ty.IsGenericType, FSharpType.IsUnion ty with
+                | false, true ->
+                    FSharpType.GetUnionCases context.Type
+                    |> Array.map _.GetFields()
+                    |> Array.map _.Length
+                    |> Array.map _.Equals(1)
+                    |> Array.reduce (&&)
+                | _ -> false
+
+
+            match isOk context.Type with
+            | false -> ()
+            | _ ->
+                let cases = FSharpType.GetUnionCases context.Type
+
+                for case in cases do
+                    let ty = case.GetFields() |> Array.exactlyOne |> _.PropertyType
+                    let s = context.SchemaGenerator.GenerateSchema(ty, context.SchemaRepository)
+                    schema.Properties.Clear()
+                    schema.AnyOf.Add(s)
+
+            for k in schema.Properties.Keys do
+                if k = "$type" then
+                    schema.Properties[k].Enum <- [| new OpenApiString(context.Type.Name) |]
+
+
 type SwaggerGenOptions with
 
     /// <summary>
@@ -115,6 +147,7 @@ type SwaggerGenOptions with
     /// </summary>
     member this.UseFSharp() =
         this.SchemaFilter<SystemTextJsonPolymorphicSchemaFilter>()
+        this.SchemaFilter<UnionSchemaFilter>()
         this.SchemaFilter<CleanExtraRequiredFieldSchemaFilter>()
         this.SchemaFilter<MarkNullableFieldSchemaFilter>()
         this.OperationFilter<CamelCaseOperationFilter>()
