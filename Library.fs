@@ -94,20 +94,29 @@ type SystemTextJsonPolymorphicSchemaFilter() =
                     |> Seq.length
                     |> fun x -> x > 1
 
-            match isJsonPolymorphismType context.Type with
-            | true ->
+            let inline isJsonDerivedType (t: Type) =
+                t.IsDefined(typeof<JsonDerivedTypeAttribute>)
+                && t.GetCustomAttributes<JsonDerivedTypeAttribute>() |> Seq.length = 1
+
+            match isJsonPolymorphismType context.Type, isJsonDerivedType context.Type with
+            | true, _ ->
                 schema.Properties.Clear()
 
                 context.Type.GetCustomAttributes<JsonDerivedTypeAttribute>()
-                |> Seq.map (fun it -> it.DerivedType, it.TypeDiscriminator)
-                |> Seq.iter (fun (ty, discriminator) ->
-                    let s = context.SchemaGenerator.GenerateSchema(ty, context.SchemaRepository)
-                    s.Required.Add("$type") |> ignore
-                    let d = new OpenApiString(discriminator.ToString())
-                    s.Properties.Add("$type", new OpenApiSchema(Default = d, Enum = [| d |], Type = "string"))
-                    schema.AnyOf.Add(s))
-            | _ -> ()
+                |> Seq.iter (fun (it) ->
+                    context.SchemaGenerator.GenerateSchema(it.DerivedType, context.SchemaRepository)
+                    |> schema.AnyOf.Add)
+            | false, true ->
+                schema.Required.Add("$type") |> ignore
 
+                let discriminator =
+                    context.Type.GetCustomAttributes<JsonDerivedTypeAttribute>()
+                    |> Seq.exactlyOne
+                    |> fun it -> it.TypeDiscriminator
+
+                let d = new OpenApiString(discriminator.ToString())
+                schema.Properties.Add("$type", new OpenApiSchema(Default = d, Enum = [| d |], Type = "string"))
+            | _ -> ()
 
 /// <summary>a discriminator ``$type`` is required</summary>
 type UnionSchemaFilter() =

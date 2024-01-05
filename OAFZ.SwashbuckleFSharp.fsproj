@@ -2,7 +2,7 @@
 
 	<PropertyGroup>
 		<PackageId>OAFZ.SwashbuckleFSharp</PackageId>
-		<Version>0.4.0</Version>
+		<Version>0.4.1</Version>
 		<Authors>阿飞</Authors>
 		<PackageLicenseExpression>MIT</PackageLicenseExpression>
 		<TargetFramework>net8.0</TargetFramework>
